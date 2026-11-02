@@ -1,0 +1,6 @@
+{
+  "name": "الشركة المصرية الهندسية للمقاولات - نظام إدارة المشتريات",
+  "description": "لوحة تحكم إدارة المشتريات والطلبات وأوامر الشراء والموردين والمخزون للشركة المصرية الهندسية للمقاولات (EEC)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
