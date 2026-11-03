@@ -48,7 +48,7 @@ export const Header: React.FC = () => {
         </div>
 
         {/* Left side: Controls, Document Scanner, Notifications Dropdown & Profile */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
           {/* Camera Document Scanner Button */}
           <button
             onClick={() => dispatch(setQuickActionModal('scanner'))}

@@ -718,6 +718,7 @@ const saveToLocalStorage = (state: ProcurementState) => {
       materialComparisons: state.materialComparisons,
       selectedComparisonId: state.selectedComparisonId,
       auditLogs: state.auditLogs,
+      notifications: state.notifications,
     }));
   } catch (e) {
     console.error('Failed to save to localStorage', e);
@@ -1152,6 +1153,149 @@ export const procurementSlice = createSlice({
       state.auditLogs.unshift(newLog);
       saveToLocalStorage(state);
     },
+    updateInventoryItemStock: (
+      state,
+      action: PayloadAction<{ id: string; newQuantity: number; newMinLimit?: number }>
+    ) => {
+      const item = state.inventory.find((i) => i.id === action.payload.id);
+      if (!item) return;
+
+      const prevQuantity = item.quantity;
+      item.quantity = Math.max(0, action.payload.newQuantity);
+      if (action.payload.newMinLimit !== undefined && action.payload.newMinLimit >= 0) {
+        item.minLimit = action.payload.newMinLimit;
+      }
+
+      const now =
+        new Date().toISOString().split('T')[0] +
+        ' ' +
+        new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+
+      // Automatically trigger Reorder Point alert if quantity drops below or equal to minLimit
+      if (item.quantity <= item.minLimit) {
+        const deficit = Math.max(item.minLimit - item.quantity, Math.ceil(item.minLimit * 0.5));
+        const alertTitle = `تنبيه آلي (تحت حد الطلب): ${item.name}`;
+        const alertMsg = `انخفض الرصيد في (${item.warehouse}) إلى ${item.quantity.toLocaleString('ar-EG')} ${item.unit} وهو أقل من حد الطلب (${item.minLimit.toLocaleString('ar-EG')} ${item.unit}). الكمية المقترحة لإعادة الطلب: ${deficit.toLocaleString('ar-EG')} ${item.unit}.`;
+
+        const newNotification: AppNotification = {
+          id: `reorder-${item.code}-${Date.now()}`,
+          type: 'low_stock',
+          title: alertTitle,
+          message: alertMsg,
+          date: 'الآن (تنبيه تلقائي)',
+          isRead: false,
+          priority: 'high',
+          targetTab: 'inventory',
+          filterMeta: { inventoryLowStock: true },
+        };
+
+        state.notifications.unshift(newNotification);
+        state.notificationsCount = state.notifications.filter((n) => !n.isRead).length;
+        state.toastMessage = `⚠️ تنبيه تلقائي: رصيد "${item.name}" (${item.quantity} ${item.unit}) وصل إلى أقل من حد الطلب (${item.minLimit} ${item.unit})!`;
+
+        state.auditLogs.unshift({
+          id: `log-${Date.now()}`,
+          timestamp: now,
+          user: 'نظام رصد المخزون الآلي',
+          userRole: 'مراقب حد الطلب (Reorder Point)',
+          actionType: 'تعديل مخزون',
+          category: 'المخزون',
+          title: `إطلاق تنبيه حد الطلب تلقائياً للمادة ${item.code}`,
+          description: `تغير الرصيد من ${prevQuantity} إلى ${item.quantity} ${item.unit} (حد الطلب: ${item.minLimit} ${item.unit}) في ${item.warehouse}`,
+          details: alertMsg,
+          status: 'تحذير',
+          targetCode: item.code,
+        });
+      } else {
+        state.toastMessage = `تم تحديث رصيد "${item.name}" إلى ${item.quantity.toLocaleString('ar-EG')} ${item.unit}`;
+        state.auditLogs.unshift({
+          id: `log-${Date.now()}`,
+          timestamp: now,
+          user: 'أمين المخزن الرئيسي',
+          userRole: 'إدارة المخازن',
+          actionType: 'تعديل مخزون',
+          category: 'المخزون',
+          title: `تحديث رصيد المخزون للمادة ${item.code}`,
+          description: `تعديل الرصيد من ${prevQuantity} إلى ${item.quantity} ${item.unit} في ${item.warehouse}`,
+          details: `الرصيد الحالي آمن فوق حد الطلب (${item.minLimit} ${item.unit})`,
+          status: 'ناجح',
+          targetCode: item.code,
+        });
+      }
+
+      saveToLocalStorage(state);
+    },
+    sendReorderAlertNotification: (
+      state,
+      action: PayloadAction<{ itemId?: string; silentToast?: boolean }>
+    ) => {
+      const now =
+        new Date().toISOString().split('T')[0] +
+        ' ' +
+        new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+
+      const targetItems = action.payload.itemId
+        ? state.inventory.filter((i) => i.id === action.payload.itemId && i.quantity <= i.minLimit)
+        : state.inventory.filter((i) => i.quantity <= i.minLimit);
+
+      if (targetItems.length === 0) {
+        if (!action.payload.silentToast) {
+          state.toastMessage = 'جميع أصناف المخزون فوق حد الطلب الآمن حالياً';
+        }
+        return;
+      }
+
+      let addedCount = 0;
+      targetItems.forEach((item, idx) => {
+        const alreadyUnread = state.notifications.some(
+          (n) => !n.isRead && n.type === 'low_stock' && n.title.includes(item.name)
+        );
+        if (!alreadyUnread || action.payload.itemId) {
+          const deficit = Math.max(item.minLimit * 2 - item.quantity, item.minLimit);
+          state.notifications.unshift({
+            id: `reorder-alert-${item.code}-${Date.now()}-${idx}`,
+            type: 'low_stock',
+            title: `تنبيه حد الطلب (Reorder Point): ${item.name}`,
+            message: `الرصيد المتاح (${item.quantity} ${item.unit}) أقل من حد الطلب (${item.minLimit} ${item.unit}) في ${item.warehouse}. يُوصى بطلب ${deficit} ${item.unit} فوراً.`,
+            date: 'الآن (فحص تلقائي)',
+            isRead: false,
+            priority: 'high',
+            targetTab: 'inventory',
+            filterMeta: { inventoryLowStock: true },
+          });
+          addedCount++;
+        }
+      });
+
+      state.notificationsCount = state.notifications.filter((n) => !n.isRead).length;
+
+      if (addedCount > 0) {
+        if (!action.payload.silentToast) {
+          state.toastMessage =
+            targetItems.length === 1
+              ? `تم إرسال تنبيه عاجل لتجاوز حد الطلب للمادة: ${targetItems[0].name}`
+              : `تم إرسال ${addedCount} تنبيهات تلقائية للمواد التي وصلت لأقل من حد الطلب (Reorder Point)`;
+        }
+
+        state.auditLogs.unshift({
+          id: `log-${Date.now()}`,
+          timestamp: now,
+          user: 'النظام الآلي',
+          userRole: 'مراقب حد الطلب (Reorder Point)',
+          actionType: 'أتمتة النظام',
+          category: 'المخزون',
+          title: `إرسال تنبيهات حد الطلب (${addedCount} مادة حرجة)`,
+          description: `تم رصد ${targetItems.length} مواد تحت حد الطلب الأدنى وإرسال إشعارات فورية لقسم المشتريات`,
+          details: `المواد: ${targetItems.map((i) => `${i.name} (${i.quantity}/${i.minLimit})`).join(' ، ')}`,
+          status: 'تحذير',
+          targetCode: targetItems[0]?.code || 'INV-ALERT',
+        });
+      } else if (!action.payload.silentToast) {
+        state.toastMessage = `تم تحديث وبث تنبيهات حد الطلب لعدد (${targetItems.length}) مواد حرجة في مركز الإشعارات`;
+      }
+
+      saveToLocalStorage(state);
+    },
   },
 });
 
@@ -1175,6 +1319,8 @@ export const {
   setSelectedComparisonId,
   awardQuotationToSupplier,
   addAuditLog,
+  updateInventoryItemStock,
+  sendReorderAlertNotification,
   setRequestStatusFilter,
   setRequestCategoryFilter,
   setOrderStatusFilter,
